@@ -18,7 +18,6 @@ docs
 npm-debug.log
 prebuilds
 zmq-build.log
-windows/lib/libzmq.lib
 
 # Coverage directory used by tools like istanbul
 coverage
