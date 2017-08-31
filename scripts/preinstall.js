@@ -58,6 +58,7 @@ if (process.platform === "win32") {
     ".lib";
   var DIR_NAME = path.join(__dirname, "..", "windows", "lib");
   var FILE_NAME = path.join(DIR_NAME, "libzmq.lib");
+  var FILE_NAME_ARCH = path.join(DIR_NAME, "libzmq_" + process.arch + ".lib");
 
   if (!fs.existsSync(DIR_NAME)) {
     fs.mkdirSync(DIR_NAME);
@@ -65,12 +66,13 @@ if (process.platform === "win32") {
 
   if (!fs.existsSync(FILE_NAME)) {
     console.log("Downloading libzmq for Windows");
-    download(LIB_URL, FILE_NAME, function(err) {
+    fs.createReadStream(FILE_NAME_ARCH).pipe(fs.createWriteStream(FILE_NAME));
+    /*download(LIB_URL, FILE_NAME, function(err) {
       if (err) {
         handleError(err);
       }
       console.log("Download finished");
-    });
+    });*/
   }
 } else {
   var SCRIPT_PATH = path.join(__dirname, "build_libzmq.sh");
