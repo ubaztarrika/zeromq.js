@@ -1,5 +1,9 @@
 language: node_js
-node_js: "6"
+node_js:
+- "6"
+- "8"
+- "10"
+- "11"
 sudo: required
 
 matrix:
@@ -22,7 +26,7 @@ matrix:
     - os: linux
       dist: trusty
       env:
-        - ELECTRON="1.4.10"
+        - ELECTRON="3.0.0"
     - os: osx
       env:
         - DEPLOY="true"
