@@ -42,6 +42,8 @@
 #ifdef _WIN32
 # define snprintf _snprintf_s
 #endif
+#include <iostream>
+#include <map>
 
 #define ZMQ_CAN_DISCONNECT (ZMQ_VERSION_MAJOR == 3 && ZMQ_VERSION_MINOR >= 2) || ZMQ_VERSION_MAJOR > 3
 #define ZMQ_CAN_UNBIND (ZMQ_VERSION_MAJOR == 3 && ZMQ_VERSION_MINOR >= 2) || ZMQ_VERSION_MAJOR > 3
@@ -89,6 +91,7 @@ namespace zmq {
       void* context_;
   };
 
+  
   class Socket : public Nan::ObjectWrap {
     public:
       static NAN_MODULE_INIT(Initialize);
@@ -166,6 +169,7 @@ namespace zmq {
       static NAN_METHOD(Monitor);
       void Unmonitor();
       static NAN_METHOD(Unmonitor);
+      static NAN_METHOD(ClearMsgBuffer);
 #endif
 
       short PollForEvents();
@@ -326,6 +330,7 @@ namespace zmq {
     Nan::SetPrototypeMethod(t, "readv", Readv);
     Nan::SetPrototypeMethod(t, "sendv", Sendv);
     Nan::SetPrototypeMethod(t, "close", Close);
+    Nan::SetPrototypeMethod(t, "clearMsgBuffer", ClearMsgBuffer);
 
 #if ZMQ_CAN_DISCONNECT
     Nan::SetPrototypeMethod(t, "disconnect", Disconnect);
@@ -342,6 +347,8 @@ namespace zmq {
 
     read_callback_symbol.Reset(Nan::New("onReadReady").ToLocalChecked());
     send_callback_symbol.Reset(Nan::New("onSendReady").ToLocalChecked());
+
+    
   }
 
   Socket::~Socket() {
@@ -965,10 +972,31 @@ namespace zmq {
    * remain while the data is in use by the Buffer.
    */
 
+  class MessageReference {
+  public:
+    inline MessageReference() {
+      if (zmq_msg_init(&msg_) < 0)
+        Nan::ThrowError(ErrorMessage());
+    }
+
+    inline ~MessageReference() {
+      if (zmq_msg_close(&msg_) < 0)
+        Nan::ThrowError(ErrorMessage());
+    }
+
+    inline operator zmq_msg_t* () {
+      return &msg_;
+    }
+
+  private:
+    zmq_msg_t msg_;
+  };
+
   class Socket::IncomingMessage {
     public:
       inline IncomingMessage() {
         msgref_ = new MessageReference();
+        m_id = s_idGenerator++; // grab the next value from the id generator
       };
 
       inline ~IncomingMessage() {
@@ -980,12 +1008,15 @@ namespace zmq {
         }
       };
 
+      inline int getID() const { return m_id; }
+
       inline operator zmq_msg_t*() {
         return *msgref_;
       }
 
       inline Local<Value> GetBuffer() {
         if (buf_.IsEmpty()) {
+          //std::cerr << "m_id= " << getID() << "- message size=" << zmq_msg_size(*msgref_) << "message reference= " << msgref_ << "\n";
           Local<Object> buf_obj = Nan::NewBuffer((char*)zmq_msg_data(*msgref_), zmq_msg_size(*msgref_), FreeCallback, msgref_).ToLocalChecked();
           if (buf_obj.IsEmpty()) {
             return Local<Value>();
@@ -995,33 +1026,40 @@ namespace zmq {
         return Nan::New(buf_);
       }
 
+      inline Local<Object> GetBufferObject() {
+        if (buf_.IsEmpty()) {
+          //std::cerr << "m_id= " << getID() << "- message size=" << zmq_msg_size(*msgref_) << "message reference= " << msgref_ << "\n";
+          Local<Object> buf_obj = Nan::NewBuffer((char*)zmq_msg_data(*msgref_), zmq_msg_size(*msgref_), FreeCallbackNull, msgref_).ToLocalChecked();
+          if (buf_obj.IsEmpty()) {
+            return Local<Object>();
+          }
+          buf_.Reset(buf_obj);
+        }
+        Local<Object> obj = Object::New(v8::Isolate::GetCurrent());
+
+        obj->Set(String::NewFromUtf8(v8::Isolate::GetCurrent(), "id"), Integer::New(v8::Isolate::GetCurrent(), getID()));
+        obj->Set(String::NewFromUtf8(v8::Isolate::GetCurrent(), "msg"), Nan::New(buf_));
+        obj->Set(String::NewFromUtf8(v8::Isolate::GetCurrent(), "msgref"), Integer::New(v8::Isolate::GetCurrent(), (int) msgref_));
+        return obj;
+      }
+
     private:
+      
+
       static void FreeCallback(char* data, void* message) {
         delete static_cast<MessageReference*>(message);
       }
 
-      class MessageReference {
-        public:
-          inline MessageReference() {
-            if (zmq_msg_init(&msg_) < 0)
-              Nan::ThrowError(ErrorMessage());
-          }
+      static void FreeCallbackNull(char* data, void* message) {
+        //delete static_cast<MessageReference*>(message);
+      }
 
-          inline ~MessageReference() {
-            if (zmq_msg_close(&msg_) < 0)
-              Nan::ThrowError(ErrorMessage());
-          }
-
-          inline operator zmq_msg_t*() {
-            return &msg_;
-          }
-
-        private:
-          zmq_msg_t msg_;
-      };
+      
 
       Nan::Persistent<Object> buf_;
       MessageReference* msgref_;
+      static int s_idGenerator;
+      int m_id;
   };
 
   class Socket::OutgoingMessage {
@@ -1083,6 +1121,7 @@ namespace zmq {
     BufferReference* bufref_;
   };
 
+  int Socket::IncomingMessage::s_idGenerator = 1;
 
 #if ZMQ_CAN_MONITOR
   NAN_METHOD(Socket::Monitor) {
@@ -1155,9 +1194,19 @@ namespace zmq {
   }
 
 #endif
+  NAN_METHOD(Socket::ClearMsgBuffer) {
 
+    int id = Nan::To<int>(info[0]).FromJust();
+    int pointer = Nan::To<int>(info[1]).FromJust();
+
+    //std::cerr << "Freeing msg id " << id << " reference << " << pointer << "\n";
+    
+    delete static_cast<MessageReference*>((void *) pointer);
+
+  }
   NAN_METHOD(Socket::Readv) {
     Socket* socket = GetSocket(info);
+    int exposeMsgBufferClearApi = Nan::To<int>(info[0]).FromJust();
     if (socket->state_ != STATE_READY)
       return;
 
@@ -1213,7 +1262,13 @@ namespace zmq {
           return Nan::ThrowError(ErrorMessage());
         }
 
-        Nan::Set(result, index++, part.GetBuffer());
+        if (exposeMsgBufferClearApi) {
+          Nan::Set(result, index++, part.GetBufferObject());
+        }
+        else {
+          Nan::Set(result, index++, part.GetBuffer());
+        }
+        
         break;
       }
 
@@ -1222,6 +1277,8 @@ namespace zmq {
           return Nan::ThrowError(ErrorMessage());
       }
     }
+
+    
 
     info.GetReturnValue().Set(result);
   }
