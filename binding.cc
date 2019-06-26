@@ -1025,10 +1025,16 @@ namespace zmq {
         }
         return Nan::New(buf_);
       }
-
+      /* This method returns complex object with the buffered message, message id and msgref pointer. 
+      */
       inline Local<Object> GetBufferObject() {
         if (buf_.IsEmpty()) {
+
           //std::cerr << "m_id= " << getID() << "- message size=" << zmq_msg_size(*msgref_) << "message reference= " << msgref_ << "\n";
+          // We create the new buffer with void FreeCallback method, so garbage collector will call tjhis routine but no memory is going to be freed.
+          // we must do that manually. In scenarios where message rececption rate is high memeory allocation can be unstable, if we free the memory used
+          // by zmq mnessage immediately after reception memory usage will be more stable.
+
           Local<Object> buf_obj = Nan::NewBuffer((char*)zmq_msg_data(*msgref_), zmq_msg_size(*msgref_), FreeCallbackNull, msgref_).ToLocalChecked();
           if (buf_obj.IsEmpty()) {
             return Local<Object>();
@@ -1036,7 +1042,6 @@ namespace zmq {
           buf_.Reset(buf_obj);
         }
         Local<Object> obj = Object::New(v8::Isolate::GetCurrent());
-
         obj->Set(String::NewFromUtf8(v8::Isolate::GetCurrent(), "id"), Integer::New(v8::Isolate::GetCurrent(), getID()));
         obj->Set(String::NewFromUtf8(v8::Isolate::GetCurrent(), "msg"), Nan::New(buf_));
         obj->Set(String::NewFromUtf8(v8::Isolate::GetCurrent(), "msgref"), Integer::New(v8::Isolate::GetCurrent(), (int) msgref_));
@@ -1261,7 +1266,8 @@ namespace zmq {
             continue;
           return Nan::ThrowError(ErrorMessage());
         }
-
+        // If exposeMsgBufferClearApi flag is set to true, we return Buffer object as result. This objects contains not only the buffered message but also
+        // message uique id and memory pointer. This pointer must be used to free allocated memory. In this mode, garbage collector is not going to clear this buffer.
         if (exposeMsgBufferClearApi) {
           Nan::Set(result, index++, part.GetBufferObject());
         }
